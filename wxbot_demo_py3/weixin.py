@@ -9,7 +9,10 @@ import requests
 import xml.dom.minidom
 import json
 import time
+import csv
 import ssl
+import requests
+from pyquery import PyQuery as pq
 import re
 import sys
 import os
@@ -21,6 +24,7 @@ import logging
 import http.client
 from collections import defaultdict
 from urllib.parse import urlparse
+import urllib
 from lxml import html
 from socket import timeout as timeout_error
 #import pdb
@@ -445,6 +449,7 @@ class WebWeixin(object):
         clientMsgId = str(int(time.time() * 1000)) + \
             str(random.random())[:5].replace('.', '')
         params = {
+            'UploadType':2,
             'BaseRequest': self.BaseRequest,
             'Msg': {
                 "Type": 1,
@@ -459,10 +464,12 @@ class WebWeixin(object):
         data = json.dumps(params, ensure_ascii=False).encode('utf8')
         r = requests.post(url, data=data, headers=headers)
         dic = r.json()
+        logger.debug('request:%s',r);
         return dic['BaseResponse']['Ret'] == 0
 
     def webwxuploadmedia(self, image_name):
-        url = 'https://file2.wx.qq.com/cgi-bin/mmwebwx-bin/webwxuploadmedia?f=json'
+
+        url = 'https://file.wx2.qq.com/cgi-bin/mmwebwx-bin/webwxuploadmedia?f=json'
         # 计数器
         self.media_count = self.media_count + 1
         # 文件名
@@ -517,7 +524,7 @@ class WebWeixin(object):
         )
 
         headers = {
-            'Host': 'file2.wx.qq.com',
+            'Host': 'file.wx2.qq.com',
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.10; rv:42.0) Gecko/20100101 Firefox/42.0',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
@@ -529,9 +536,10 @@ class WebWeixin(object):
             'Pragma': 'no-cache',
             'Cache-Control': 'no-cache'
         }
-
+        logger.debug(url)
         r = requests.post(url, data=multipart_encoder, headers=headers)
         response_json = r.json()
+        logger.debug(json.dumps(response_json));
         if response_json['BaseResponse']['Ret'] == 0:
             return response_json
         return None
@@ -616,7 +624,7 @@ class WebWeixin(object):
     def webwxgetmsgimg(self, msgid):
         url = self.base_uri + \
             '/webwxgetmsgimg?MsgID=%s&skey=%s' % (msgid, self.skey)
-        data = self._get(url)
+        data = self._get(url,api='webwxgetmsgimg')
         if data == '':
             return ''
         fn = 'img_' + msgid + '.jpg'
@@ -661,6 +669,7 @@ class WebWeixin(object):
     def getUserRemarkName(self, id):
         name = '未知群' if id[:2] == '@@' else '陌生人'
         if id == self.User['UserName']:
+
             return self.User['NickName']  # 自己
 
         if id[:2] == '@@':
@@ -695,6 +704,8 @@ class WebWeixin(object):
         return name
 
     def getUSerID(self, name):
+        if name[:2] == '@@':
+            return name
         for member in self.MemberList:
             if name == member['RemarkName'] or name == member['NickName']:
                 return member['UserName']
@@ -708,7 +719,7 @@ class WebWeixin(object):
         content = None
 
         msg = message
-        logging.debug(msg)
+        logging.info(msg)
 
         if msg['raw_msg']:
             srcName = self.getUserRemarkName(msg['raw_msg']['FromUserName'])
@@ -956,6 +967,7 @@ class WebWeixin(object):
             media_id = response['MediaId']
         user_id = self.getUSerID(name)
         response = self.webwxsendmsgimg(user_id, media_id)
+        return response
 
     def sendEmotion(self, name, file_name):
         response = self.webwxuploadmedia(file_name)
@@ -983,7 +995,6 @@ class WebWeixin(object):
             if not self.waitForLogin(0):
                 continue
             break
-
         self._run('[*] 正在登录 ... ', self.login)
         self._run('[*] 微信初始化 ... ', self.webwxinit)
         self._run('[*] 开启状态通知 ... ', self.webwxstatusnotify)
@@ -995,6 +1006,9 @@ class WebWeixin(object):
                                                                          len(self.ContactList), len(self.SpecialUsersList), len(self.PublicUsersList)))
         print()
         self._run('[*] 获取群 ... ', self.webwxbatchgetcontact)
+        print()
+        self._echo('[*] 群列表 %s ' % json.dumps(self.GroupList))
+        print()
         logging.debug('[*] 微信网页版 ... 开动')
         if self.DEBUG:
             print(self)
@@ -1022,28 +1036,77 @@ class WebWeixin(object):
                 print('[*] 退出微信')
                 logging.debug('[*] 退出微信')
                 exit()
-            elif text[:2] == '->':
-                [name, word] = text[2:].split(':')
-                if name == 'all':
-                    self.sendMsgToAll(word)
-                else:
-                    self.sendMsg(name, word)
-            elif text[:3] == 'm->':
-                [name, file] = text[3:].split(':')
-                self.sendMsg(name, file, True)
-            elif text[:3] == 'f->':
-                print('发送文件')
-                logging.debug('发送文件')
-            elif text[:3] == 'i->':
-                print('发送图片')
-                [name, file_name] = text[3:].split(':')
-                self.sendImg(name, file_name)
-                logging.debug('发送图片')
-            elif text[:3] == 'e->':
-                print('发送表情')
-                [name, file_name] = text[3:].split(':')
-                self.sendEmotion(name, file_name)
-                logging.debug('发送表情')
+            else:
+                try:
+                    [name, word] = text[:].split(':')
+                    with open(word) as f:
+                            f_csv = csv.reader(f)
+                            headers = next(f_csv)
+                            for row in f_csv:
+                                if os.path.isfile('/tmp/pause'):
+                                    continue
+                                img_file = '/tmp/' + row[0] +'.jpg'
+                                if os.path.isfile(img_file) :
+                                    continue
+                                title = self._get_url_title(row[3])
+                                urllib.request.urlretrieve(row[2],img_file)
+                                content = '{}\n【原价{}元】{}\n'.format(row[1],row[5],title)
+                                if row[15] != None:
+                                    content = content + '领卷【{}】\n'.format(row[15])
+                                content = content + '购买链接{}\n复制这条信息{}打开「手机淘宝」领券下单\n'.format(row[10],row[12])
+                                time.sleep(60)
+                                if self.sendImg(name,img_file) == False:
+                                    logger.warn('send img error:%s',row[0])
+                                    continue
+                                self.sendMsg(name, content)
+                except Exception as e :
+                    print (e)
+                    continue
+            #     text[:2] == '->':
+            #     [name, word] = text[2:].split(':')
+            #     if name == 'all':
+            #         self.sendMsgToAll(word)
+            #     else:
+            #         with open(word) as f:
+            #             f_csv = csv.reader(f)
+            #             headers = next(f_csv)
+            #             for row in f_csv:
+            #                 title = self._get_url_title(row[3])
+            #                 urllib.request.urlretrieve(row[2],'/tmp/'+row[0]+'.jpg')
+            #                 content = '{}\n【原价{}元】{}\n领卷【{}】\n购买链接{}\n复制这条信息{}打开「手机淘宝」领券下单\n'.format(row[1],row[5],title,row[15],row[10],row[12])
+            #                 self.sendImg(name,'/tmp/'+row[0]+'.jpg')
+            #                 self.sendMsg(name, content)
+            #                 time.sleep(1)
+            # elif text[:3] == 'g->':
+            #     [groupid,word] = text[3:].split(':')
+            #     groupid = '@@' + groupid
+            #     contents = self._get_content()
+            #     for i in contents:
+            #         logger.debug(i)
+            #         if self.webwxsendmsg(i, groupid):
+            #             print('[*] 消息发送成功')
+            #             logging.debug('[*] 消息发送成功')
+            #         else:
+            #             print('[*] 消息发送失败')
+            #             logging.debug('[*] 消息发送失败')
+            # elif text[:3] == 'm->':
+            #     [name, file] = text[3:].split(':')
+            #     self.sendMsg(name, file, True)
+            # elif text[:3] == 'f->':
+            #     print('发送文件')
+            #     logging.debug('发送文件')
+            # elif text[:3] == 'i->':
+            #     print('发送图片')
+            #     [name, file_name] = text[3:].split(':')
+            #     if self.sendImg(name, file_name):
+            #         logging.debug('发送图片成功')
+            #     else:
+            #         logging.debug('发送图片失败')
+            # elif text[:3] == 'e->':
+            #     print('发送表情')
+            #     [name, file_name] = text[3:].split(':')
+            #     self.sendEmotion(name, file_name)
+            #     logging.debug('发送表情')
 
     def _safe_open(self, path):
         if self.autoOpen:
@@ -1102,6 +1165,8 @@ class WebWeixin(object):
             request.add_header('Range', 'bytes=0-')
         if api == 'webwxgetvideo':
             request.add_header('Range', 'bytes=0-')
+        if api == 'webwxgetmsgimg':
+            request.add_header('Accept','image/png,image/;q=0.8,/*;q=0.5')
         try:
             response = urllib.request.urlopen(request, timeout=timeout) if timeout else urllib.request.urlopen(request)
             if api == 'webwxgetvoice' or api == 'webwxgetvideo':
@@ -1186,7 +1251,9 @@ class WebWeixin(object):
             if pm:
                 return pm.group(1)
         return '未知'
-
+    def _get_url_title(self, url):
+        r = requests.get(url)
+        return pq(r.text).find('#J_Title').find('.tb-subtitle').text()
 
 class UnicodeStreamFilter:
 
@@ -1213,7 +1280,7 @@ if __name__ == '__main__':
     logger = logging.getLogger(__name__)
     if not sys.platform.startswith('win'):
         import coloredlogs
-        coloredlogs.install(level='DEBUG')
+        coloredlogs.install(level='INFO')
 
     webwx = WebWeixin()
     webwx.start()
